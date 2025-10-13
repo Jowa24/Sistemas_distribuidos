@@ -1,0 +1,79 @@
+@startuml 
+class EV_Central {
+    - ipPortListening : String
+    - ipPortBroker : String
+    + constructor (ipPortListening : String, ipPortBroker : String)
+    + startCentral()
+    + registrateCP()
+    + requestRegistration()
+    + validateCharging() 
+    + startCharging()
+    + statusCharging()
+    + endCharging()
+    + sendTicket()
+    + activateCP()
+    + stopCP()
+}
+
+
+class EV_CP {
+    - id : int
+    - location : Location
+    - price : double
+    - status : CPStatus
+    - engine : ChargingPointEnginge
+    - monitor : ChargingPointMonitor
+}
+
+class EV_CP_E {
+    - ipPortCentral : String
+    + constructor(ipPortCentral : String)
+    + startCharging()
+    + updateStatusCharging()
+    + interruptCharging() "Speicher alle Daten zwischen, um bei einem crash wieder am gleichen Punkt weiterzumachen"
+    + stopCharging()
+    + activateCP()
+    + stopCP()
+    + getKO()
+}
+
+class EV_CP_M {
+    - id : int
+    - ipPortEV_CP_E : String
+    - ipPortCentral : String
+    + constructor(id : int, ipPortEV_CP_E : String, ipPortCentral : String)
+    + bootUp()
+    + registration()
+    + requestStatusCP()
+    + throwError()
+    + updateStatusCharging()
+}
+
+class EV_Driver {
+    - id : int
+    + constructor (ipPortBroker : String, id : int)
+    + getCPs() : List<int>
+    + requestCharging() // called after in idle state for 4 seconds
+    + startCharging() 
+    + updateStatusCharging()
+    + stopCharging()
+}
+
+class KafkaTopic {
+    - requests : String
+    - information(?) : String
+}
+
+
+EV_Central--> KafkaTopic : subscribes
+EV_CP_M --> KafkaTopic  : produces
+EV_Driver --> KafkaTopic : produces
+
+EV_CP --> EV_CP_E : has
+EV_CP --> EV_CP_M : has
+
+EV_CP_M <--> EV_CP_E : socket
+EV_CP_M <--> EV_Central : socket
+
+
+@enduml
