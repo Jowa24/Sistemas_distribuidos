@@ -3,7 +3,8 @@ class EV_Central {
     - ipPortListening : String
     - ipPortBroker : String
     + constructor (ipPortListening : String, ipPortBroker : String)
-    + startCentral()
+    + bootstrapCentral()
+    + runCentral()
     + registrateCP()
     + requestRegistration()
     + validateCharging() 
@@ -59,18 +60,30 @@ class EV_Driver {
     + stopCharging()
 }
 
-class KafkaTopicRequest {
+class KafkaTopicInformation {
+    - information : String
+}
+
+class KafkaTopicDriverRequest {
+    - Information : String
+}
+
+class KafkaTopicEngineRequest {
     - requests : String
 }
 
-class KafkaTopicInformation {
-    - info : String
-}
+
+EV_Central--> KafkaTopicDriverRequest : subscribes
+EV_Driver --> KafkaTopicDriverRequest : produces
+
+EV_CP_E --> KafkaTopicEngineRequest  : subscribes
+EV_Central --> KafkaTopicEngineRequest  : produces
 
 
-EV_Central--> KafkaTopic : subscribes
-EV_CP_E --> KafkaTopic  : produces
-EV_Driver --> KafkaTopic : produces
+EV_Central --> KafkaTopicInformation : subscribes
+EV_Driver --> KafkaTopicInformation : subscribes
+EV_CP_E --> KafkaTopicInformation : produces
+
 
 EV_CP --> EV_CP_E : has
 EV_CP --> EV_CP_M : has
