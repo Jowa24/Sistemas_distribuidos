@@ -59,9 +59,12 @@ class EV_Driver {
     + stopCharging()
 }
 
-class KafkaTopic {
+class KafkaTopicRequest {
     - requests : String
-    - information(?) : String
+}
+
+class KafkaTopicInformation {
+    - info : String
 }
 
 
