@@ -1,16 +1,17 @@
 ## Open questions
 
-Should we host a local web page to show the server console?
-
-What is the EV_CP_M exactly?
-    - is he sending the status data or is it the engine?
-    - is he the own handling the requests?
-
-
 ---
 
-
 ## Solved questions
+
+What is the EV_CP_M sending the status data or is it the engine?
+    -> it is the enginge over a different kafka topic
+
+Is the EV_CP_M the own handling the requests?
+    -> no they flow over the kafak queues
+
+Should we host a local web page to show the server console?
+    - We have to, but not a webpage, terminal or any interface is also fine
 
 How do the sockets work
     - just sending messages over a port
