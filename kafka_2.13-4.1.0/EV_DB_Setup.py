@@ -8,7 +8,7 @@ def setUpDB() :
     cursor.execute("""
                 CREATE TABLE IF NOT EXISTS charging_points(
                 id INTEGER, 
-                location TEXYT, 
+                location TEXT, 
                 status INTEGER, 
                 priceKW REAL, 
                 consumption, REAL
@@ -16,5 +16,14 @@ def setUpDB() :
                 )  
         """)
     connection.commit()
+
+    cursor.execute("""
+                CREATE TABLE IF NOT EXISTS requests(
+                requestId INTEGER,
+                driverId INTEGER,
+                cpId INTEGER
+                )
+        """)
+    connection.comit()
 
     connection.close()

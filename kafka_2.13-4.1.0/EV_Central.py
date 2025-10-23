@@ -1,12 +1,12 @@
 import asyncio
 import aiosqlite
-
+from EV_Utile import InformationMessage
 from enum import Enum
 import EV_DB_Setup
-from flask import Flask
 
 from kafka import KafkaProducer, KafkaConsumer, KafkaAdminClient, NewTopic
 
+import random
 import socket
 import sqlite3
 import sys
@@ -17,33 +17,6 @@ import threading
 # arguments: 
 #   --ipPort Broker 
 #   --ipPort listening
-
-"""
-    1. Server needs two arguments
-     - throw error if less arguments received
-
-    2. Server starts the bootstrap process
-    - Check for active CP's
-    - Start Monitor(?)
-
-    3. Wait for 
-        a. request for new CP
-        b. request for charging
-    
-    Charging:
-        a. validateRequest (userID : int, cpID : int)
-        b. sendRequest (userID : int, cpID : int) - request is send to Topic "Order"
-        c. statusCharging() - outputs the status of the process to the consol
-            - waits for the user to end the charging process
-        d. sendTicket() - final ticket is sent with information
-
-    Registration:
-        a. update Status of the CP
-
-    4. Extras:
-        a. activate Charging Point
-        b. stop Charging Point
-"""
 def main() :
     # check arguments
     if len(sys.argv) < 3:
@@ -55,21 +28,25 @@ def main() :
     # call function that handles running the different components of the central
     central(brokerIP, ListenerPort)
 
-"""
-    Creates the different Threads handling the different roles of the server
-        1. MonitorHandler keeps contact with the monitors of the CP's and keeps their status in DB and monitors them
-        2. RequestHandler handles the validating and on-passing of the requests
-        3. InformationHandler saves all the information in the DB and logs it
-"""
+
+class Central:
+
+    def __init__(self, )
+
+
 def central(brokerIP : str, listenerPort : str ) :
 
     # Get the setUp defined by the arguments given to main
     requestConsumer, requestProducer, informationConsumer, informationProducer = bootstrapCentral(brokerIP)
 
     # Start the different parts of the central
-    threading.Thread( args=listenerPort,target=monitorHandler)
-    threading.Thread( args= (requestConsumer, requestProducer) ,target=requestHandler)
-    threading.Thread( args=(informationConsumer, informationProducer), target=informationHandler)
+    thread = threading.Thread( args=listenerPort,target=monitorHandler)
+    thread.start()
+    thread = threading.Thread( args= (requestConsumer, requestProducer) ,target=requestHandler)
+    thread.start()
+    thread = threading.Thread( args=(informationConsumer, informationProducer), target=informationHandler)
+    thread.start()
+
 
 # TODO("Use arguments to set ports")
 def bootstrapCentral( brokerIP : str) :
@@ -113,10 +90,10 @@ def bootstrapCentral( brokerIP : str) :
     return (requestConsumer, requestProducer, informationConsumer, informationProducer)
 
 # SetUp the wanted Kafka Topics
-def createTopics( borkerPort) :
+def createTopics( brokerPort) :
     # Connect to the broker
     admin_client = KafkaAdminClient(
-        bootstrap_servers= TODO,
+        bootstrap_servers= brokerPort,
         client_id='setup-script'
     )
 
@@ -152,40 +129,65 @@ def createTopics( borkerPort) :
     finally:
         admin_client.close()
 
-def requestHandler( requestConsumer : KafkaConsumer, requestProducer : KafkaProducer):
-    """
-        msg should have the form:
-        [driver_id] [cp_id] [location]
-    """
+def requestHandler( requestConsumer : KafkaConsumer, requestProducer : KafkaProducer)
+
     for request in requestConsumer:
 
         msg = request.value.decode('utf-8')
-        userId, cpId, location = msg.split()
+        driverId, cpId, location = msg.split()
 
         if (validate(cpId, location)) :
-            requestProducer.send('CR', msg.value)
+
+            # write request in DB so information is sent to correct driver
+            connection = sqlite3.connect('EV.db')
+            cursor = connection.cursor()
+            
+            
+            cursor.execute("""
+                        SELECT requestId
+                        FROM requests 
+                        WHERE id = ?
+                        ORDER BY requestId DESC
+            """, (driverId))
+            requestId = cursor.fetchone() + 1
+
+            cursor.execute("""
+                        INSERT INTO requests (requestId, driverId, cpId)
+                        VALUES( ?, ?, ?)
+            """, (requestId, driverId, cpId))
+
+            msgWithRequestId = requestId + " " + msg
+            requestProducer.send('CR', msgWithRequestId.encode('utf-8'))
+
         else : 
+            #TODO("better notification")
             print("Request could not be verified")
         
 
-"""
-    Receives the information from the charging point
-    Stores it in the DB
-"""
+
+# Receives the information from the charging point Stores it in the DB
 def informationHandler( informationConsumer : KafkaConsumer, informationProducer : KafkaProducer) :
     connection = sqlite3.connect("EV.db")
     cursor = connection.cursor()
 
     """
         msg should have the form:
-        [type], [id], [consumption], [price]
+        [requestId] [type], [cp_id], [consumption], [price_kw]
     """
     try:
         for information in informationConsumer:
 
             # write information to database
             msg = information.value.decode('utf-8')
-            type, cpId, consumption, price = msg.split()
+            
+            values = InformationMessage.decode_message(msg)
+            request_id = values["request_id"]
+            type = values["type"]
+            cp_id = values["cp_id"]#
+            price = values["price"]
+            consumption = values["consumption"]
+            price_kw = values["price_kw"]
+
 
             match informationTypeEnginge(type):
 
@@ -195,7 +197,7 @@ def informationHandler( informationConsumer : KafkaConsumer, informationProducer
                     UPDATE charging_points
                     SET consumption = 0, price = ? 
                     WHERE id = ?
-                    """, (consumption, price, cpId))
+                    """, (consumption, price, cp_id))
                     connection.commit()
 
                     # send information to driver
@@ -206,7 +208,7 @@ def informationHandler( informationConsumer : KafkaConsumer, informationProducer
                     UPDATE charging_points
                     SET consumption = ?, price = ? 
                     WHERE id = ?
-                    """, (consumption, price, cpId))
+                    """, (consumption, price, cp_id))
                     connection.commit()
 
                     # send information to driver
@@ -217,25 +219,19 @@ def informationHandler( informationConsumer : KafkaConsumer, informationProducer
                     UPDATE charging_points
                     SET consumption = ?, price = ? 
                     WHERE id = ?
-                    """, (consumption, price, cpId))
+                    """, (consumption, price, cp_id))
                     connection.commit()
+
                     # TODO("handle sending a ticket to the driver")
-                    # send ticket to driver
                     informationProducer.send("ProducerCentral", msg.value)
-
-            
-
 
     finally:
         connection.close()
 
 
-"""
-    Checks if the station is ready for charging and outputs information about status
-    returns True if status is ATIVE 
-    returns False in every other case
-"""
-def validate(cp_id : str, location : str) :
+
+    # Checks if the station is ready for charging and outputs information about status
+    def validate(cp_id : str, location : str) :
 
     # get charging point - form: (id, location, status, priceKW, consumption, price)
     connection = sqlite3.connect("EV.db")
@@ -265,100 +261,82 @@ def validate(cp_id : str, location : str) :
             # TODO("How to react in this case, is giving the information enough?")
             return False
 
-"""
-    Puts the runServer() coroutine into the eventloop
-    Allows for "concurrent" efficent handling of the different connections through the event loop
-"""
-async def monitorHandler( listenerPort : str) :
+
+    # Puts the runServer() coroutine into the eventloop
+    async def monitorHandler( listenerPort : str) :
     
     asyncio.run(runServer( listenerPort))
 
-"""
-    Uses async to create a server that is accepting new connections and handling them "concurrently" 
-    To handle the connections the getStatus() method is run
-"""
-async def runServer( listenerPort : str) :
+
+    async def runServer( listenerPort : str) :
 
     server = await asyncio.server_start(getStatus(), port=listenerPort )
     async with server:
         await server.serve_forever()
 
-"""
-    Listens to the EV_CP_M 
-    Reveives the status 
-    Updates the CP in the DB
-    Received data should have structure:
-    [cp_id] [status_as_int]
-"""
-async def getStatus( reader, writer) :
 
-    async with aiosqlite.connect('EV.db') as db:
-        while data := await reader.read_line():
+    # Listens to the EV_CP_M and updates the DB
+    async def getStatus( reader, writer) :
 
-            decodedData = data.decode().strip()
-            type, cpId, location,  status, priceKW, consumption, price = decodedData.split()
+        async with aiosqlite.connect('EV.db') as db:
+            while data := await reader.read_line():
 
-            match informationTypeMonitor(type) :
+                decodedData = data.decode().strip()
+                type, cpId, location,  status, priceKW, consumption, price = decodedData.split()
 
-                case 'AUTHENTICATION' :
-                    await db.execute("""
-                    INSERT OR IGNORE INTO charging_points (id, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """, (cpId, location, status, priceKW, consumption, price))
-                    await db.commit()
+                match informationTypeMonitor(type) :
 
-                case 'STATUS_CONFIRMATION' :
-                    continue
+                    case 'AUTHENTICATION' :
 
-                case 'STATUS_UPDATE' :
-                    await db.execute( """
-                        UPDATE charging_points
-                        SET status = ? 
-                        WHERE id = ?
-                    """, (status, cpId) )
-                    await db.commit()
+                        # TODO("inform")
 
-                case 'ERROR':
+                        await db.execute("""
+                        INSERT OR IGNORE INTO charging_points (id, status)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, (cpId, location, status, priceKW, consumption, price))
+                        await db.commit()
 
-                    # TODO("inform users about problem ")
+                    case 'STATUS_CONFIRMATION' :
+                        continue
 
-                    await db.execute( """
-                        UPDATE charging_points
-                        SET status = 4
-                        WHERE id = ?
-                    """, (cpId) )
-                    await db.commit()
-                    
-                case 'ERROR_RESOLVED' :
-                    
-                    # TODO("inform users about continuation of charging process")
+                    case 'STATUS_UPDATE' :
 
-                    await db.execute( """
-                        UPDATE charging_points
-                        SET status = 3
-                        WHERE id = ?
-                    """, (cpId) )
-                    await db.commit()
+                        # TODO("inform")
+
+                        await db.execute( """
+                            UPDATE charging_points
+                            SET status = ? 
+                            WHERE id = ?
+                        """, (status, cpId) )
+                        await db.commit()
+
+                    case 'ERROR':
+
+                        # TODO("inform users about problem ")
+
+                        await db.execute( """
+                            UPDATE charging_points
+                            SET status = 4
+                            WHERE id = ?
+                        """, (cpId) )
+                        await db.commit()
+                        
+                    case 'ERROR_RESOLVED' :
+                        
+                        # TODO("inform users about continuation of charging process")
+
+                        await db.execute( """
+                            UPDATE charging_points
+                            SET status = 3
+                            WHERE id = ?
+                        """, (cpId) )
+
+                        # TODO("if necessary send ticket to user")
+
+                        await db.commit()
 
 
-class Status(Enum):
-    ACTIVE = 1
-    OUT_OF_ORDER = 2
-    IN_USAGE = 3
-    DEFECT = 4
-    DISCONNECTED = 5
 
-class informationTypeMonitor(Enum):
-    AUTHENTICATION = 1
-    STATUS_CONFIRMATION = 2
-    STATUS_UPDATE = 3
-    ERROR = 4
-    ERROR_RESOLVED = 5
-
-class informationTypeEnginge(Enum):
-    CHARGING_START = 1
-    CHARGING_ONGOING = 2
-    CHARGING_END = 3
 
 
 if __name__ == "__main__":

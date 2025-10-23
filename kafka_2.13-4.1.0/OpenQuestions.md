@@ -4,6 +4,10 @@
 
 ## Solved questions
 
+Are we allowed to use different Threads for the Central?
+    -> YES!! Use one thread per role of the server
+
+
 What is the EV_CP_M sending the status data or is it the engine?
     -> it is the enginge over a different kafka topic
 
