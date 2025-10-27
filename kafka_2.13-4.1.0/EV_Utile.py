@@ -20,12 +20,20 @@ class InformationTypeEngine(Enum):
     CHARGING_ONGOING = 2
     CHARGING_END = 3
 
+
+
+
 class RequestMessage:
 
-    def __init__(self, cp_id, driver_id):
+    DRIVER = "driver_id"
+    CP = "cp_id"
+
+    KEY_NAMES = [DRIVER, CP]
+
+    def __init__(self, cp_id, driver_id, request_id=None):
         self._cp_id = cp_id
         self._driver_id = driver_id
-        self.request_id = None
+        self.request_id = request_id
 
     @property
     def driver_id(self):
@@ -47,10 +55,43 @@ class RequestMessage:
         return(
             f"{self.cp_id} {self.driver_id} {self.request_id}"
         )
+    
+    # a method to obtain a dictonary filled with the values from the messages indexed by their names
+    @classmethod
+    def decode_message(message):
+        global KEY_NAMES
 
+        message_dictonary = {}
+        for key_name in KEY_NAMES:
+            value = InformationMessage.extract_value(key_name, message)
+            
+            message_dictonary[key_name] = value
+
+        return message_dictonary
+    
+    # helper method for decode_message
+    @classmethod
+    def extract_value(key_name, message):
+        pattern = rf'{key_name}=([\d\w\.\-_]+)'
+        
+        match = re.search(pattern, message)
+        
+        if match:
+            return match.group(1)
+        raise TypeError("the message could not have been decoded properly")
+
+# defines how information is transmited and offers helper methods 
 class InformationMessage:
-
-    KEY_NAMES = ["request_id", "type", "cp_id", "start_time", "price_kw", "consumption", "price"]
+        
+    REQUEST = "request_id"
+    TYPE = "type"
+    CP = "cp_id"
+    START = "start_time"
+    CURRENT = "current_time"
+    KW = "price_kw"
+    
+    
+    KEY_NAMES = [REQUEST, TYPE, CP, START, CURRENT, KW,]
 
     def __init__(self, request_id, type, cp_id, start_time, current_time, price_kw, cp_power = 11,):
         self._request_id = request_id
@@ -77,13 +118,20 @@ class InformationMessage:
     def current_time(self): return self._current_time
     @property
     def price_kw(self): return self._price_kw
+    @property
+    def cp_power(self): return self._cp_power
+    @property
+    def duration(self): return self._duration
+    @property
+    def consumption(self): return self._consumption
+    @property
+    def price(self): return self._price
 
-    #form:[requestId] [type] [cp_id] [time] [consumption] [price_kw]
+
     def __str__(self) -> str:
         return (
             f"request_id={self.request_id} type={self.type} cp_id{self.cp_id} "
-            f"start_time{self.start_time:.2f} price_kw={self.price_kw:.2f} consumption={self.consumption:.2f} "
-            f"price={self.price:.2f}"
+            f"start_time{self.start_time:.2f} current_time={self.current_time} price_kw={self.price_kw:.2f} "
         )
 
     # a method to obtain a dictonary filled with the values from the messages indexed by their names
@@ -118,3 +166,34 @@ class InformationMessage:
     def get_price(self) -> float :
         consumption = self.get_consumption(self.get_duration(self.start_time, self.time))
         return consumption * self.price_kw
+
+
+class Ticket:
+
+    def __init__(self, request_id, cp_id, consumption, price, price_kw ):
+        self._request_id = request_id
+        self._cp_id = cp_id
+        self._price_kw = price_kw
+        self._consumption = consumption
+        self._price = price          
+
+    @property
+    def request_id(self): return self._request_id
+    @property
+    def cp_id(self): return self._cp_id
+    @property
+    def duration(self): return self._duration
+    @property
+    def consumption(self): return self._consumption
+    @property
+    def price(self): return self._price
+    @property
+    def price_kw(self): return self._price_kw
+
+    #form:[requestId] [type] [cp_id] [time] [consumption] [price_kw]
+    def __str__(self) -> str:
+        return (
+            f"Your ticket for request={self.request_id} at "
+            f"cp {self.cp_id} with consumption={self.consumption:.2f}, "
+            f"total price={self.price:.2f} for price per kw={self.price_kw}"
+        )

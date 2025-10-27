@@ -1,6 +1,6 @@
 import asyncio
 import aiosqlite
-from EV_Utile import ChargingPointStatus, InformationMessage, InformationTypeEngine, InformationTypeMonitor
+from EV_Utile import ChargingPointStatus, InformationMessage, InformationTypeEngine, InformationTypeMonitor, RequestMessage
 from enum import Enum
 import EV_DB_Setup
 
@@ -56,7 +56,7 @@ class Central:
 
 
 
-
+    # DONE
     def run_central(self):
 
         # Start the different parts of the central
@@ -67,7 +67,7 @@ class Central:
         information_thread = threading.Thread(target=self.informationHandler)
         information_thread.start()
 
-
+    # DONE
     # SetUp the wanted Kafka Topics
     def createTopics(self) :
         # Connect to the broker
@@ -92,13 +92,13 @@ class Central:
                 name="Central-CP",
                 num_partitions=1,
                 replication_factor=1
-            )
+            ),
             NewTopic(
                 name="CP-Central",
                 num_partitions=1,
                 replication_factor=1
             )
-        ]
+    ]
 
         try:
             admin_client.create_topics(new_topics=topic_list, validate_only=False)
@@ -108,14 +108,17 @@ class Central:
         finally:
             admin_client.close()
 
+    # DONE 
     def requestHandler(self):
 
         for request in self.request_consumer:
 
             msg = request.value.decode('utf-8')
-            driverId, cpId, location = msg.split()
+            values = RequestMessage.decode_message(msg)
+            driver_id = values[RequestMessage.DRIVER]
+            cp_id = values[RequestMessage.CP]
 
-            if (self.validate(cpId, location)) :
+            if (self.validate(cp_id)) :
 
                 # write request in DB so information is sent to correct driver
                 connection = sqlite3.connect('EV.db')
@@ -123,27 +126,30 @@ class Central:
                 
                 
                 cursor.execute("""
-                            SELECT requestId
+                            SELECT request_id
                             FROM requests 
-                            WHERE id = ?
-                            ORDER BY requestId DESC
-                """, (driverId))
-                requestId = cursor.fetchone() + 1
+                            ORDER BY request_id DESC
+                """)
+                request_id = cursor.fetchone() + 1
 
                 cursor.execute("""
-                            INSERT INTO requests (requestId, driverId, cpId)
+                            INSERT INTO requests (request_id, driver_id, cp_id)
                             VALUES( ?, ?, ?)
-                """, (requestId, driverId, cpId))
+                """, (request_id, driver_id, cp_id))
 
-                msgWithRequestId = requestId + " " + msg
-                self.request_producer.send('CR', msgWithRequestId.encode('utf-8'))
+                msg_with_request_id = RequestMessage(
+                    cp_id,
+                    driver_id,
+                    request_id
+                )
+                msg_with_request_id = str(msg_with_request_id)
+
+                self.request_producer.send('Central-CP', msg_with_request_id.encode('utf-8'))
 
             else : 
-                #TODO("better notification")
-                print("Request could not be verified")
+                print(f"cp: {cp_id} is not reachable right now")
             
-
-
+    # Done
     # Receives the information from the charging point Stores it in the DB
     def informationHandler(self) :
         connection = sqlite3.connect("EV.db")
@@ -152,22 +158,31 @@ class Central:
         try:
             for information in self.information_cnsumer:
 
-                # write information to database
                 msg = information.value.decode('utf-8')
                 
                 values = InformationMessage.decode_message(msg)
                 request_id = values[InformationMessage.REQUEST]
                 type = values[InformationMessage.TYPE]
                 cp_id = values[InformationMessage.CP]
-                price = values[InformationMessage.PRICE]
-                consumption = values[InformationMessage.CONSUMPTION]
+                start_time = values[InformationMessage.START]
+                current_time = values[InformationMessage.CURRENT]
                 price_kw = values[InformationMessage.KW]
+
+                information_message = InformationMessage(
+                    request_id,
+                    type,
+                    cp_id,
+                    start_time,
+                    current_time,
+                    price_kw
+                )
+                consumption = information_message.consumption
+                price = information_message.price
 
 
                 match InformationTypeEngine(type):
 
                     case 'CHARGING_START' :
-                        # TODO("handle start with extra information")
                         cursor.execute("""
                         UPDATE charging_points
                         SET consumption = 0, price = ? 
@@ -176,7 +191,8 @@ class Central:
                         connection.commit()
 
                         # send information to driver
-                        self.information_poducer.send("ProducerCentral", msg.value)
+                        information_message = str(information_message)
+                        self.information_producer.send("Central-Driver", information_message.decode('UTF-8'))
                     
                     case 'CHARGING_ONGOING' :
                         cursor.execute("""
@@ -187,7 +203,8 @@ class Central:
                         connection.commit()
 
                         # send information to driver
-                        self.information_producer.send("ProducerCentral", msg.value)
+                        information_message = str(information_message)
+                        self.information_producer.send("Central-Driver", information_message.decode('UTF-8'))
 
                     case 'CHARGING_END' :
                         cursor.execute("""
@@ -197,8 +214,16 @@ class Central:
                         """, (consumption, price, cp_id))
                         connection.commit()
 
-                        # TODO("handle sending a ticket to the driver")
-                        self.information_producer.send("ProducerCentral", msg.value)
+                        # sending a ticket to the driver
+                        ticket = Ticket(
+                            request_id,
+                            cp_id,
+                            consumption,
+                            price,
+                            price_kw,
+                        )
+                        ticket = str(ticket)
+                        self.information_producer.send("Central-Driver", ticket.decode('UTF-8'))
 
         finally:
             connection.close()
@@ -206,14 +231,14 @@ class Central:
 
 
         # Checks if the station is ready for charging and outputs information about status
-        def validate(self):
+        def validate(self, cp_id):
 
             # get charging point - form: (id, location, status, priceKW, consumption, price)
             connection = sqlite3.connect("EV.db")
             cursor = connection.cursor()
 
-            cursor.execute("SELECT * FROM charging_points WHERE id = ? AND location = ?", 
-                        (self.cp_id, self.location)
+            cursor.execute("SELECT * FROM charging_points WHERE id = ?", 
+                        (cp_id)
                         )
             chargingPoint = cursor.fetchone()
 
@@ -237,8 +262,8 @@ class Central:
                     return False
 
 
-        # Puts the runServer() coroutine into the eventloop
-        async def monitorHandler(self):
+    # Puts the runServer() coroutine into the eventloop
+    async def monitorHandler(self):
         
             asyncio.run(self.runServer())
 
