@@ -1,216 +1,265 @@
-import asyncio
 import time
 import threading
 import socket
-from kafka import KafkaProducer
-from kafka import KafkaConsumer
+from kafka import KafkaProducer, KafkaConsumer, TopicPartition
 import sys
-from EV_Utile import InformationMessage, InformationTypeEngine
-from EV_Utile import ChargingPointStatus
 
+from EV_Utile import (
+    InformationMessage, InformationTypeEngine, RequestMessage,
+    ChargingPointStatus, frame_message, SyncSocketFrameProtocol
+)
 
-HEADER = 64
 FORMAT = 'utf-8'
+NUM_PARTITIONS = 7
 
+def main():
+    if len(sys.argv) < 5:
+        print("Usage: python3 EV_CP_E.py <cp_id> <price_kw> <broker_address_ip:port> <socket_address_ip:port>")
+        sys.exit(1)
+        
+    cp_id = sys.argv[1]
+    price_kw = float(sys.argv[2])
+    broker_address = sys.argv[3]
+    
+    try:
+        socket_ip, socket_port = sys.argv[4].split(':')
+        socket_addr = (socket_ip, int(socket_port))
+    except ValueError:
+        print("Socket address format must be 'ip:port'")
+        sys.exit(1)
 
-# simply build the object and starts it with the passed arguments
-def main() :
     engine = Engine(
-        sys.args[1],
-        sys.args[2],
-        sys.args[3],
-        sys.args[4],
-        sys.args[5]
+        cp_id,
+        price_kw,
+        broker_address,
+        socket_addr
     )
-    engine.run()
+    engine.run_engine()
 
 
 class Engine:
 
-    def __init__(self, cp_id, location, price_kw, broker_port, socket_addr):
+    def __init__(self, cp_id, price_kw, broker_address, socket_addr):
         self._id = cp_id
-        self._location = location
         self._price_kw = price_kw 
+        
         self._consumer = KafkaConsumer(
-            'Central-CP',
-            bootstrap_servers= broker_port,
-            auto_offset_reset='earliest',
-            enable_auto_commit=True,
-            group_id='my-group'
+            bootstrap_servers=broker_address,
+            enable_auto_commit=True
         )
-        self._producer = KafkaProducer(bootstrap_servers= broker_port)
-        self._power = 11
+        partition = int(self._id) % NUM_PARTITIONS
+        self._consumer.assign([TopicPartition('Central-CP', partition)])
+        print(f"Engine {self._id} assigned to partition {partition}")
+
+        self._producer = KafkaProducer(bootstrap_servers=broker_address)
+        self._power = 11.0 # kW
         self._ADDR = socket_addr
         self._status = ChargingPointStatus.DISCONNECTED
+        print(f"Engine {self._id} starting...")
 
-
+    # --- Properties ---
     @property
-    def id(self):
-        return self._id
-
+    def id(self): return self._id
     @property
-    def location(self):
-        return self._location
-
-    @property
-    def status(self):
-        return self._status
-    
+    def status(self): return self._status
     @status.setter
     def status(self, new_status):
-        self._status = new_status
-
+        if self._status != new_status:
+            self._status = new_status
+            print(f"Engine {self.id}: Status changed to {self._status.name}")
     @property
-    def price_kw(self):
-        return self._price_kw
-
+    def price_kw(self): return self._price_kw
     @property
-    def power(self):
-        return self._power
+    def power(self): return self._power
+    @property
+    def socket_ip(self) : return self._ADDR
+    @property
+    def consumer(self): return self._consumer
+    @property
+    def producer(self): return self._producer
     
-    @property
-    def socket_ip(self) :
-        return self._ADDR
-
-    @property
-    def consumer(self):
-        return self._consumer
-
-    @property
-    def producer(self):
-        return self._producer
-
-    @property
-    def broker_port(self):
-        return self._broker_port
+    # --- Methoden ---
     
-    
-    def run_engine(self) :
-
-        threading.Thread( args=self, target=self.charging_engine)
-        threading.Thread( args=self, target=self.send_status)
-        threading.Thread( args=self, target=self.user_input)
-    
-    # simulates the engine awaiting requests and only stops on userinput
-    def charging_engine(self) :
+    def run_engine(self):
+        self.status = ChargingPointStatus.ACTIVE
         
-        # [request_id] [driver_id] [cp_id] [location]
+        thread_charging = threading.Thread(target=self.charging_engine, args=())
+        thread_charging.start()
+        
+        thread_socket = threading.Thread(target=self.run_server, args=())
+        thread_socket.start()
+        
+        thread_input = threading.Thread(target=self.user_input, args=())
+        thread_input.start()
+        print(f"Engine {self.id} is running.")
+    
+    def charging_engine(self):
+        print(f"Engine {self.id}: Charging engine listening for requests...")
         for request in self.consumer:
-
-            # check if enginge crashed
-            if( self.status == ChargingPointStatus.DEFECT) :
+            if( self.status == ChargingPointStatus.DEFECT):
+                print(f"Engine {self.id}: Charging engine stopping due to DEFECT status.")
                 break
             
-            msg = request.value.decode('UTF-8')
-            request_id, driver_id, cp_id, location = msg.split()
+            msg = request.value.decode('utf-8')
+            try:
+                req_data = RequestMessage.decode_message(msg)
+                request_id = req_data.request_id
+                cp_id_req = req_data.cp_id
 
-            if( cp_id == self._id) :
-                self.start_charging(request_id)
+                if( cp_id_req == self.id ):
+                    print(f"Engine {self.id}: Received request {request_id}. Starting charge.")
+                    charge_thread = threading.Thread(target=self.start_charging, args=(request_id,))
+                    charge_thread.start()
+                
+            except Exception as e:
+                print(f"Engine {self.id}: Could not decode request message '{msg}': {e}")
 
-    def send_status(self) :
-        server = socket.socket(socket.AF_INET , socket.SOCK_STREAM)
-        server.bind(self.ADDR)
+    def run_server(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(self._ADDR)
+            server.listen()
+            print(f"Engine {self.id}: Socket server listening on {self._ADDR}")
+            
+            while(self.status != ChargingPointStatus.DEFECT):
+                conn, addr = server.accept()
+                thread = threading.Thread(target=self.handle_client, args=(conn, addr))
+                thread.start()
+        except OSError as e:
+            print(f"Engine {self.id}: CRITICAL - Could not bind to socket {self._ADDR}. {e}")
+        finally:
+            server.close()
+            print(f"Engine {self.id}: Socket server shut down.")
+
+    def handle_client(self, conn: socket.socket, addr):
+        """
+        Implementiert R4.3: Liest und sendet gerahmte Socket-Nachrichten.
+        """
+        print(f"Engine {self.id}: Monitor connected from {addr}")
+        conn.settimeout(10.0)
+        protocol = SyncSocketFrameProtocol(conn) # Protokoll-Handler
         
-    def run_server(self, server) : 
-        # TODO("implement communication protocol")
-        server.listen()
-        while(self.status != ChargingPointStatus.DEFECT) :
-            conn, addr = server.accept()
-            thread = threading.Thread(target=self.handle_client, args=(conn, addr))
-            thread.start()
+        try:
+            while(self.status != ChargingPointStatus.DEFECT):
+                msg = protocol.read_message() 
+                
+                if msg == "GET_STATUS":
+                    response = f"status={self.status.value}&price_kw={self.price_kw}"
+                    
+                    conn.sendall(frame_message(response))
+                else:
+                    conn.sendall(frame_message("ERR_UNKNOWN_CMD"))
 
-    def handle_client(self, conn, addr) :
-        # TODO("implement communication protocol")
-        while(self.status != ChargingPointStatus.DEFECT) :
-            msg_length = conn.recv(HEADER).decode(FORMAT)
-            if msg_length:
-                msg_length = int(msg_length)
-                msg = conn.recv(msg_length).decode(FORMAT)
-                if msg == "send_status":
-                    conn.send(self.status.decode(FORMAT))
+        except (socket.timeout, ConnectionError, ConnectionResetError, BrokenPipeError):
+            print(f"Engine {self.id}: Monitor {addr} disconnected.")
+        except Exception as e:
+            if self.status != ChargingPointStatus.DEFECT:
+                print(f"Engine {self.id}: Error handling client {addr}: {e}")
+        finally:
+            conn.close()
 
     def user_input(self):
-        # TODO("think about how to stop and restart machine")
-        while(True) :
-            user_input = input("Enter 'end' to end charging, 'crash' to simulate a crash of the eninge and 'fix' to reboot the engine after a crash")
-            if user_input.lower() == 'end':
-                self.status(ChargingPointStatus.ACTIVE)
-            if user_input.input.lower() == 'crash':
-                self.status(ChargingPointStatus.DEFECT) # this will kill charging_enginge() and send_status()
-            if user_input.input.lower() == 'fix' :
-                self.reboot_engine()
+        while(True):
+            try:
+                user_input = input(f"Engine {self.id} Input ('end', 'crash', 'fix'): \n")
+                if user_input.lower() == 'end':
+                    if self.status == ChargingPointStatus.IN_USAGE:
+                        self.status = ChargingPointStatus.ACTIVE
+                    else:
+                        print(f"Engine {self.id}: Not currently charging.")
+                elif user_input.lower() == 'crash':
+                    self.status = ChargingPointStatus.DEFECT
+                    break 
+                elif user_input.lower() == 'fix':
+                    if self.status == ChargingPointStatus.DEFECT:
+                        print(f"Engine {self.id}: Rebooting...")
+                        self.reboot_engine()
+                    else:
+                        print(f"Engine {self.id}: Not in DEFECT state.")
+            except EOFError:
+                break
+    
+    def reboot_engine(self):
+        self.status = ChargingPointStatus.ACTIVE
+        thread_socket = threading.Thread(target=self.run_server, args=())
+        thread_socket.start()
+        print(f"Engine {self.id}: Reboot complete. Socket server restarted.")
 
-    # TODO("ticket sending, in combination mit crash implementieren")
-    def start_charging(self, request_id) :
-        # send starting message
-        start_time = time.perf_counter()
-        message = self.to_start_message(request_id, start_time)     
-        self.producer.send('CP-Central', message.encode('UTF-8'))
+    def start_charging(self, request_id):
+        start_time = time.time()
+        message = self.to_start_message(request_id, start_time)
+        self._producer.send('CP-Central', 
+                            value=message.encode(FORMAT),
+                            key=str(int(self.id) % NUM_PARTITIONS).encode(FORMAT))
         
-        # enter charging state
         self.status = ChargingPointStatus.IN_USAGE
-        while(self.status == ChargingPointStatus.IN_USAGE) :
+        
+        charge_duration_seconds = 10 
+        end_time = start_time + charge_duration_seconds
+        
+        while time.time() < end_time:
+            if self.status != ChargingPointStatus.IN_USAGE:
+                break
             time.sleep(1)
-
-            current_time = time.perf_counter()
+            current_time = time.time()
             message = self.to_ongoing_message(request_id, start_time, current_time)
-            self.producer.send('Cp-Central', message.encode('UTF-8'))
+            self._producer.send('CP-Central', 
+                                value=message.encode(FORMAT),
+                                key=str(int(self.id) % NUM_PARTITIONS).encode(FORMAT))
 
-    # uses the InformationMessage class to construct and return a clean string with the defined format
+        final_time = time.time()
+        
+        if self.status == ChargingPointStatus.DEFECT:
+            print(f"Engine {self.id}: Charging {request_id} stopped due to crash.")
+        else:
+            self.status = ChargingPointStatus.ACTIVE
+            end_message = self.to_end_message(request_id, start_time, final_time)
+            self._producer.send('CP-Central', 
+                                value=end_message.encode(FORMAT),
+                                key=str(int(self.id) % NUM_PARTITIONS).encode(FORMAT))
+            print(f"Engine {self.id}: Charging {request_id} finished.")
+            
+        self._producer.flush()
+
+    # --- Message Helper ---
+    
     def to_start_message(self, request_id, start_time) -> str:
         message = InformationMessage(
-                request_id,
-                InformationTypeEngine.CHARGING_START,
-                self.id,
-                start_time,
-                start_time, # note that this will mean duration = 0 -> consumption = 0, price = 0
-                self.price_kw,
-                self.power,
+                request_id=request_id,
+                type=InformationTypeEngine.CHARGING_START,
+                cp_id=self.id,
+                start_time=start_time,
+                current_time=start_time,
+                price_kw=self.price_kw,
+                cp_power=self.power,
             )
         return str(message)
 
-    # uses the InformationMessage class to construct and return a clean string with the defined format
     def to_ongoing_message(self, request_id, start_time, current_time) -> str:
         message = InformationMessage(
-                request_id,
-                InformationTypeEngine.CHARGING_ONGOING,
-                self.id,
-                start_time,
-                current_time,
-                self.price_kw,
-                self.power,
+                request_id=request_id,
+                type=InformationTypeEngine.CHARGING_ONGOING,
+                cp_id=self.id,
+                start_time=start_time,
+                current_time=current_time,
+                price_kw=self.price_kw,
+                cp_power=self.power,
+            )
+        return str(message)
+    
+    def to_end_message(self, request_id, start_time, end_time) -> str:
+        message = InformationMessage(
+                request_id=request_id,
+                type=InformationTypeEngine.CHARGING_END,
+                cp_id=self.id,
+                start_time=start_time,
+                current_time=end_time,
+                price_kw=self.price_kw,
+                cp_power=self.power,
             )
         return str(message)
 
+if __name__ == "__main__":
+    main()
 
-"""
-    def reboot_engine(self) :
-        threading.Thread(args=self, target=self.charging_engine)
-        threading.Thread(args=self, target=self.send_status)
- 
-    #form:[requestId] [type] [cp_id] [time] [consumption] [price_kw]
-    def get_message(self, type_name : str, request_id : int, start_time : float, time : float) -> str:
-
-        type = InformationTypeEngine[type_name]
-
-        match type:
-            case InformationTypeEngine.CHARGING_START :
-                return f"{request_id} {type} {self.id} {start_time} {0} {self.price_kw}" 
-            case InformationTypeEngine.CHARGING_ONGOING :
-                duration = self.get_duration(start_time, time)
-                return f"{request_id} {type} {self.id} {start_time} {self.get_consumption(duration)} {self.price_kw}" 
-            case InformationTypeEngine.CHARGING_END :
-                duration = self.get_duration(start_time, time)
-                return f"{request_id} {type} {self.id} {start_time} {self.get_consumption(duration)} {self.price_kw}" 
-        
-    def get_duration(self, start_time : float, time : float) -> float : 
-        return time - start_time
-
-    def get_consumption(self, duration : float) -> float :
-        return duration * self.power
-    
-    def get_price(self, start_time, time) -> float :
-        consumption = self.get_consumption(self.get_duration(start_time, time))
-        return consumption * self.price_kw
-
-"""

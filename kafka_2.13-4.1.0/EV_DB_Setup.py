@@ -5,25 +5,28 @@ def setUpDB() :
 
     cursor = connection.cursor()
 
+    # Updated: 'location TEXT' removed
     cursor.execute("""
                 CREATE TABLE IF NOT EXISTS charging_points(
-                id INTEGER, 
-                location TEXT, 
+                id INTEGER PRIMARY KEY, 
                 status INTEGER, 
-                priceKW REAL, 
-                consumption, REAL
-                price REAL
+                priceKW REAL 
                 )  
         """)
     connection.commit()
 
     cursor.execute("""
                 CREATE TABLE IF NOT EXISTS requests(
-                requestId INTEGER,
-                driverId INTEGER,
-                cpId INTEGER
+                request_id INTEGER PRIMARY KEY,
+                cp_id INTEGER,
+                consumption FLOAT,
+                price FLOAT,
+                price_kw FLOAT,
+                driver_id INTEGER,
+                done BOOLEAN
                 )
         """)
-    connection.comit()
+    connection.commit()
 
     connection.close()
+
