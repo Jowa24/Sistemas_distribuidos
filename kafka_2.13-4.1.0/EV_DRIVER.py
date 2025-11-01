@@ -73,14 +73,19 @@ class Driver:
             cp_id = entry.strip()
             if not cp_id:
                 continue
-
+            
+            print(f"\nDriver {self.id}: ==================================================")
             print(f"Driver {self.id}: Requesting CP {cp_id}")
             request = self.get_request(cp_id)
             
+            # NEW: Debug log
+            print(f"Driver {self.id}: --> Sending request for CP {cp_id} to 'Driver-Central'")
             self._producer.send('Driver-Central',
                                 value=request.encode('utf-8'),
                                 key=str(self.id).encode('utf-8'))
             self._producer.flush()
+            # NEW: Debug log
+            print(f"Driver {self.id}:    Request flushed.")
 
             self.receive()
 
@@ -90,41 +95,64 @@ class Driver:
         print(f"Driver {self.id}: Request list finished.")
 
     def receive(self):
-        print(f"Driver {self.id}: Listening for session outcome (Ticket or Error)...")
+        # NEW: Debug log
+        partition = self._consumer.assignment().pop().partition
+        print(f"Driver {self.id}: [Receiver]: Listening for session outcome on 'Central-Driver' (Partition {partition})...")
+        
         for message in self.consumer:
+            # NEW: Debug log
+            print(f"\nDriver {self.id}: [Receiver]: <-- Received message")
             msg_str = message.value.decode('utf-8')
+            print(f"Driver {self.id}: [Receiver]:    Payload: {msg_str}")
 
             try:
                 msg_obj = StatusMessage.decode_message(msg_str)
+                # NEW: Debug log
+                print(f"Driver {self.id}: [Receiver]:    Decoded as StatusMessage.")
+                
                 if msg_obj.cp_id != self._last_requested_cp_id:
+                    # NEW: Debug log
+                    print(f"Driver {self.id}: [Receiver]:    Ignoring StatusMessage (CP ID {msg_obj.cp_id} != Requested {self._last_requested_cp_id})")
                     continue
                 
                 print(f"Driver {self.id} (STATUS): {str(msg_obj)}")
 
                 if msg_obj.type == InformationTypeMonitor.ERROR:
                     print(f"Driver {self.id}: ERROR! Charging session failed: {msg_obj.status.name}")
-                    return
+                    return # Stop listening and move to next request
 
                 continue
 
             except (ValueError, TypeError):
+                # NEW: Debug log
+                # print(f"Driver {self.id}: [Receiver]:    Message is not a StatusMessage.")
                 pass
 
             try:
                 msg_obj = Ticket.decode_message(msg_str)
+                # NEW: Debug log
+                print(f"Driver {self.id}: [Receiver]:    Decoded as Ticket.")
                 print(f"Driver {self.id} (TICKET): {str(msg_obj)}")
                 return  # <-- STOPS receive() and starts the 4s pause
 
             except (ValueError, TypeError):
+                # NEW: Debug log
+                # print(f"Driver {self.id}: [Receiver]:    Message is not a Ticket.")
                 pass 
             
             try:
                 msg_data = InformationMessage.decode_message(msg_str)
+                # NEW: Debug log
+                print(f"Driver {self.id}: [Receiver]:    Decoded as InformationMessage (dict).")
 
                 if msg_data.get('type') == InformationTypeEngine.CHARGING_START.value:
                     self._last_request_id = msg_data.get('request_id')
+                    # NEW: Debug log
+                    print(f"Driver {self.id}: [Receiver]:    Received CHARGING_START. Storing Request ID: {self._last_request_id}")
 
                 if msg_data.get('request_id') != self._last_request_id:
+                    # NEW: Debug log
+                    print(f"Driver {self.id}: [Receiver]:    Ignoring InformationMessage (Request ID {msg_data.get('request_id')} != Active {self._last_request_id})")
                     continue
 
                 msg_obj = InformationMessage(**msg_data)
@@ -135,14 +163,18 @@ class Driver:
                     case InformationTypeEngine.CHARGING_ONGOING:
                         print(f"Driver {self.id} (INFO): Update: Price={msg_obj.price:.2f} EUR, Consumption={msg_obj.consumption:.2f} kWh")
                     case InformationTypeEngine.CHARGING_END:
+                        # This should not be hit, as the Ticket is sent instead
                         pass 
                 
                 continue
 
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                # NEW: Debug log
+                print(f"Driver {self.id}: [Receiver]:    Could not decode message as any known type. Error: {e}")
                 pass
 
-            pass
+            # NEW: Debug log
+            print(f"Driver {self.id}: [Receiver]:    Message was received but not processed by any handler.")
 
     def get_request(self, cp_id):
         self._last_requested_cp_id = cp_id
@@ -157,4 +189,3 @@ class Driver:
 
 if __name__ == "__main__":
     main()
-

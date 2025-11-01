@@ -2,6 +2,11 @@ import asyncio
 import socket
 from enum import Enum
 import re
+import sys # <-- Import sys
+
+# --- Partitioning Config ---
+# Must be the same in Central, Driver, and Enginexs
+NUM_PARTITIONS = 7 # <-- FIX: Added missing variable
 
 # --- Socket Protocol Constants ---
 STX = b'\x02'  # Start of Text
@@ -70,7 +75,7 @@ class SyncSocketFrameProtocol:
                     raise ConnectionError("Socket closed by peer.")
                 self._buffer += new_data
             except socket.timeout:
-                raise socket.timeout
+                raise socket.timeout # Re-raise for the monitor to catch
             except Exception as e:
                 raise ConnectionError(f"Socket read error: {e}")
 
@@ -89,28 +94,28 @@ class AsyncSocketFrameProtocol:
         as they arrive.
         """
         while True:
-            # Check buffer for existing complete frame
-            stx_pos = self._buffer.find(STX)
-            if stx_pos != -1:
-                etx_pos = self._buffer.find(ETX, stx_pos)
-                if etx_pos != -1 and etx_pos > stx_pos:
-                    frame_end_pos = etx_pos + 2  # for <etx> and <lrc>
-                    if len(self._buffer) >= frame_end_pos:
-                        
-                        frame = self._buffer[stx_pos:frame_end_pos]
-                        data_bytes = frame[1:-2]
-                        lrc_byte = frame[-1:]
-                        
-                        self._buffer = self._buffer[frame_end_pos:]
-                        
-                        if _calculate_lrc(data_bytes) == lrc_byte:
-                            yield data_bytes.decode(FORMAT)
-                        else:
-                            print("SocketProtocol Error: Checksum mismatch. Dropping frame.")
-                        continue # Check buffer again for more frames
-            
-            # Buffer empty or incomplete, read more
             try:
+                # Check buffer for existing complete frame
+                stx_pos = self._buffer.find(STX)
+                if stx_pos != -1:
+                    etx_pos = self._buffer.find(ETX, stx_pos)
+                    if etx_pos != -1 and etx_pos > stx_pos:
+                        frame_end_pos = etx_pos + 2  # for <etx> and <lrc>
+                        if len(self._buffer) >= frame_end_pos:
+                            
+                            frame = self._buffer[stx_pos:frame_end_pos]
+                            data_bytes = frame[1:-2]
+                            lrc_byte = frame[-1:]
+                            
+                            self._buffer = self._buffer[frame_end_pos:]
+                            
+                            if _calculate_lrc(data_bytes) == lrc_byte:
+                                yield data_bytes.decode(FORMAT)
+                            else:
+                                print("SocketProtocol Error: Checksum mismatch. Dropping frame.")
+                            continue # Check buffer again for more frames
+                
+                # Buffer empty or incomplete, read more
                 new_data = await self._reader.read(4096)
                 if not new_data:
                     break # Connection closed
@@ -121,6 +126,7 @@ class AsyncSocketFrameProtocol:
                 print(f"SocketProtocol Error: {e}")
                 break
 
+# --- Data Classes ---
 
 class ChargingPointStatus(Enum):
     ACTIVE = 1
@@ -131,7 +137,7 @@ class ChargingPointStatus(Enum):
 
 class InformationTypeMonitor(Enum):
     AUTHENTICATION = 1
-    STATUS_CONFIRMATION = 2
+    STATUS_CONFIRMATION = 2 # This is unused, but kept for reference
     STATUS_UPDATE = 3
     ERROR = 4
     ERROR_RESOLVED = 5
@@ -186,6 +192,7 @@ class RequestMessage:
             value = cls.extract_value(key_name, message)
             message_dictionary[key_name] = value
         
+        # Return as an object
         return cls(
             cp_id=message_dictionary.get(cls.CP),
             driver=message_dictionary.get(cls.DRIVER),
@@ -228,6 +235,7 @@ class InformationMessage:
         self._current_time = float(current_time)
         self._price_kw = float(price_kw)
         self._cp_power = float(cp_power)
+        # Calculated fields
         self._duration = self.get_duration()
         self._consumption = self.get_consumption()
         self._price = self.get_price()
@@ -268,6 +276,7 @@ class InformationMessage:
                  raise ValueError(f"Missing required key in InformationMessage: {key_name} in '{message}'")
             message_dictionary[key_name] = value
         
+        # Return as a dictionary
         return message_dictionary
     
     @classmethod
@@ -277,9 +286,10 @@ class InformationMessage:
         if match:
             value = match.group(1)
             if value == 'None': return None
-            try: return int(value)
+            # Try float first for timestamps/prices
+            try: return float(value)
             except ValueError:
-                try: return float(value)
+                try: return int(value)
                 except ValueError: return value
         return None
 
@@ -295,9 +305,10 @@ class InformationMessage:
         return self.consumption * self.price_kw
 
 class Ticket:
+    # Updated regex to be more specific
     TICKET_PATTERN = re.compile(
-        r"Ticket for request=(?P<request_id>\w+) at "
-        r"cp (?P<cp_id>\w+) with consumption=(?P<consumption>[\d\.]+), "
+        r"Ticket for request=(?P<request_id>[\w\d]+) at "
+        r"cp (?P<cp_id>[\w\d]+) with consumption=(?P<consumption>[\d\.]+), "
         r"total price=(?P<price>[\d\.]+) for price per kw=(?P<price_kw>[\d\.]+)"
     )
 
@@ -340,6 +351,7 @@ class StatusMessage:
     CP_ID = "cp_id"
     STATUS = "status"
     PRICE_KW = "price_kw"
+    # location removed
     KEY_NAMES = [TYPE, CP_ID, STATUS, PRICE_KW]
     
     def __init__(self, type, cp_id, status, price_kw):
@@ -367,9 +379,10 @@ class StatusMessage:
     def price_kw(self): return self._price_kw
     
     def encode_for_socket(self):
+        # location removed
         return (
             f"{self.TYPE}={self.type.value} {self.CP_ID}={self.cp_id} "
-            f"{self.STATUS}={self.status.value} {self.PRICE_KW}={self.price_kw}\n"
+            f"{self.STATUS}={self.status.value} {self.PRICE_KW}={self.price_kw}"
         )
 
     @classmethod
@@ -404,6 +417,7 @@ class StatusMessage:
         status_name = self.status.name
         match self.type:
             case InformationTypeMonitor.AUTHENTICATION:
+                # location removed
                 return (f"CP_AUTH: ID={self.cp_id} is {status_name}. "
                         f"Price: {self.price_kw} EUR/kWh.")
             case InformationTypeMonitor.STATUS_UPDATE:
@@ -414,4 +428,5 @@ class StatusMessage:
                 return f"CP_RESOLVED: The error at charging point {self.cp_id} has been resolved. Status: {status_name}."
             case _:
                 return f"CP_INFO: ID={self.cp_id}, Status={status_name}."
+
 

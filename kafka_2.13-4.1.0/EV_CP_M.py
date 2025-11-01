@@ -179,3 +179,5 @@ class Monitor:
             self._engine_client.close()
             self._engine_client = None
 
+if __name__ == "__main__":
+    main()
