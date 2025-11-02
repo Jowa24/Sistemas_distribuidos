@@ -169,3 +169,17 @@ services:
       kafka:
         condition: service_healthy
     command: python3 kafka_debug_tool.py kafka:29092
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    networks: [ev_network]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic central-events --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic engine-events  --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic driver-events  --partitions 1 --replication-factor 1
+        echo "topics ready"
+

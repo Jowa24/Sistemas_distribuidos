@@ -17,3 +17,46 @@ services:
     ports:
       - "8090:8090"
     restart: unless-stopped
+ # --- CP3 ENGINE ---
+  cp3-engine:
+    build:
+      context: .
+      dockerfile: python.Dockerfile
+    networks:
+      - ev_network
+    depends_on:
+      ev-central:
+        condition: service_started
+    command: python3 EV_CP_E.py 3 0.60 kafka:29092 cp3-engine:9003
+    ports:
+      - "9003:9003"
+    stdin_open: true
+    tty: true
+
+  # --- CP3 MONITOR ---
+  cp3-monitor:
+    build:
+      context: .
+      dockerfile: python.Dockerfile
+    networks:
+      - ev_network
+    depends_on:
+      - ev-central
+      - cp3-engine
+    command: >
+      sh -c "sleep 5 &&
+             python3 EV_CP_M.py cp3-engine 9003 ev-central 8080 3"
+
+  # --- DRIVER 103 (targets CP 3; adjust as you like) ---
+  driver-103:
+    build:
+      context: .
+      dockerfile: python.Dockerfile
+    networks:
+      - ev_network
+    depends_on:
+      ev-central:
+        condition: service_started
+    command: >
+      sh -c "sleep 12 &&
+             python3 EV_DRIVER.py 3 103 kafka:29092"

@@ -1,26 +1,93 @@
-﻿<!doctype html><meta charset="utf-8" />
+﻿<!doctype html>
+<meta charset="utf-8" />
 <title>Central UI</title>
 <style>
   body { font-family: ui-monospace, Menlo, monospace; margin:16px }
-  .row { border-bottom:1px solid #e5e7eb; padding:6px 0; white-space:pre-wrap }
-  .muted{opacity:.7}
+  #out { border-bottom:1px solid #e5e7eb; padding:6px 0; white-space:pre-wrap }
+  .muted { opacity:.7 }
+  .row { padding:4px 0; border-top:1px dashed #e5e7eb }
+  .ok { color: #16a34a }
+  .err { color: #dc2626 }
 </style>
 <h2>Central Dashboard</h2>
 <div id="status" class="muted">Connecting…</div>
 <label>Filter topic: <input id="filter" placeholder="central-events (optional)"></label>
 <div id="out"></div>
+
 <script>
-const out=document.getElementById('out'), filter=document.getElementById('filter');
-const ws=new WebSocket(ws:///ws);
-ws.onopen=()=>document.getElementById('status').textContent='Connected';
-ws.onclose=()=>document.getElementById('status').textContent='Disconnected';
-ws.onmessage=e=>{
-  const m=JSON.parse(e.data);
-  if(filter.value && m.topic!==filter.value.trim()) return;
-  let val=m.value; try{ val=JSON.stringify(JSON.parse(m.value),null,2);}catch{}
-  const ts=new Date(m.timestamp||Date.now()).toISOString();
-  const div=document.createElement('div'); div.className='row';
-  div.textContent=[]  p@\n;
-  out.prepend(div);
-};
+(function(){
+  const out   = document.getElementById('out');
+  const stat  = document.getElementById('status');
+  const flt   = document.getElementById('filter');
+
+  // Build WS URL, with optional ?ws= override in the page URL
+  function buildWsUrl() {
+    const urlParam = new URLSearchParams(location.search).get('ws');
+    if (urlParam) return urlParam; // e.g. ?ws=ws://localhost:8090/ws
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const host  = location.host; // includes port if any
+    const path  = '/ws';         // ← change if your backend uses a different path
+    return `${proto}://${host}${path}`;
+  }
+
+  let ws, retryMs = 1000, maxRetryMs = 10000;
+
+  function logLine(text, cls) {
+    const div = document.createElement('div');
+    div.className = 'row ' + (cls || '');
+    div.textContent = text;
+    out.prepend(div);
+  }
+
+  function connect() {
+    const wsUrl = buildWsUrl();
+    stat.textContent = `Connecting to ${wsUrl}…`;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (e) {
+      stat.textContent = 'WebSocket init error';
+      logLine('WS init error: ' + e.message, 'err');
+      scheduleReconnect();
+      return;
+    }
+
+    ws.onopen = () => {
+      stat.textContent = 'Connected';
+      stat.className = 'ok';
+      retryMs = 1000; // reset backoff
+    };
+
+    ws.onclose = () => {
+      stat.textContent = 'Disconnected';
+      stat.className = 'muted';
+      scheduleReconnect();
+    };
+
+    ws.onerror = (e) => {
+      logLine('WS error', 'err');
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        // Expecting something like: { topic, timestamp, value }
+        if (flt.value && m.topic && m.topic !== flt.value.trim()) return;
+        const ts = m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString();
+        let val = m.value;
+        if (typeof val !== 'string') { try { val = JSON.stringify(val, null, 2); } catch {} }
+        logLine(`[${ts}] ${m.topic || 'event'}\n${val}`);
+      } catch {
+        // Not JSON -> just print raw
+        logLine(ev.data);
+      }
+    };
+  }
+
+  function scheduleReconnect() {
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(maxRetryMs, retryMs * 2);
+  }
+
+  connect();
+})();
 </script>
