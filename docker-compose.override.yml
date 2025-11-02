@@ -1,0 +1,16 @@
+services:
+  central-ui:
+    build: ./central-ui   # <-- was ./central-ui
+    networks:
+      - ev_network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:29092
+      - KAFKA_GROUP_ID=central-ui
+      - KAFKA_TOPICS=central-events,engine-events,driver-events
+      - WEBSOCKET_PATH=/ws
+    ports:
+      - "9092:29092"
+    restart: unless-stopped

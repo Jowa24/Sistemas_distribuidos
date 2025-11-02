@@ -1,0 +1,26 @@
+﻿<!doctype html><meta charset="utf-8" />
+<title>Central UI</title>
+<style>
+  body { font-family: ui-monospace, Menlo, monospace; margin:16px }
+  .row { border-bottom:1px solid #e5e7eb; padding:6px 0; white-space:pre-wrap }
+  .muted{opacity:.7}
+</style>
+<h2>Central Dashboard</h2>
+<div id="status" class="muted">Connecting…</div>
+<label>Filter topic: <input id="filter" placeholder="central-events (optional)"></label>
+<div id="out"></div>
+<script>
+const out=document.getElementById('out'), filter=document.getElementById('filter');
+const ws=new WebSocket(ws:///ws);
+ws.onopen=()=>document.getElementById('status').textContent='Connected';
+ws.onclose=()=>document.getElementById('status').textContent='Disconnected';
+ws.onmessage=e=>{
+  const m=JSON.parse(e.data);
+  if(filter.value && m.topic!==filter.value.trim()) return;
+  let val=m.value; try{ val=JSON.stringify(JSON.parse(m.value),null,2);}catch{}
+  const ts=new Date(m.timestamp||Date.now()).toISOString();
+  const div=document.createElement('div'); div.className='row';
+  div.textContent=[]  p@\n;
+  out.prepend(div);
+};
+</script>

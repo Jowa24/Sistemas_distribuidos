@@ -1,0 +1,19 @@
+services:
+  central-ui:
+    # If the 'central-ui' folder is next to your compose file, keep this:
+    build: ./central-ui
+    # If it's one level up, use:
+    # build: ../central-ui
+    networks:
+      - ev_network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:29092
+      - KAFKA_GROUP_ID=central-ui
+      - KAFKA_TOPICS=central-events,engine-events,driver-events
+      - WEBSOCKET_PATH=/ws
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
