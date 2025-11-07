@@ -3,6 +3,9 @@ import socket
 from enum import Enum
 import re
 import sys # <-- Import sys
+import sqlite3
+from datetime import datetime 
+import threading 
 
 # --- Partitioning Config ---
 # Must be the same in Central, Driver, and Enginexs
@@ -428,5 +431,310 @@ class StatusMessage:
                 return f"CP_RESOLVED: The error at charging point {self.cp_id} has been resolved. Status: {status_name}."
             case _:
                 return f"CP_INFO: ID={self.cp_id}, Status={status_name}."
+            # =============================================================================
+# DATABASE MANAGER
+# =============================================================================
+
+class DatabaseManager:
+    def __init__(self, db_path='charging_network.db'):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize SQLite database with all required tables"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Charging Points table - aligned with your ChargingPointStatus enum
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS charging_points (
+                    id TEXT PRIMARY KEY,
+                    location TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'DISCONNECTED',
+                    price_per_kwh REAL NOT NULL,
+                    current_power REAL DEFAULT 0,
+                    current_amount REAL DEFAULT 0,
+                    current_driver_id TEXT,
+                    last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Drivers table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS drivers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    email TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Charging Sessions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS charging_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cp_id TEXT NOT NULL,
+                    driver_id TEXT NOT NULL,
+                    start_time TIMESTAMP NOT NULL,
+                    end_time TIMESTAMP,
+                    total_energy REAL DEFAULT 0,
+                    total_cost REAL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (cp_id) REFERENCES charging_points (id),
+                    FOREIGN KEY (driver_id) REFERENCES drivers (id)
+                )
+            ''')
+            
+            # Fault Logs table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS fault_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cp_id TEXT NOT NULL,
+                    fault_type TEXT NOT NULL,
+                    description TEXT,
+                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP,
+                    status TEXT NOT NULL,
+                    FOREIGN KEY (cp_id) REFERENCES charging_points (id)
+                )
+            ''')
+            
+            # Insert sample data
+            self._insert_sample_data(cursor)
+            
+            conn.commit()
+            conn.close()
+    
+    def _insert_sample_data(self, cursor):
+        """Insert sample data for testing - aligned with your existing enums"""
+        # Sample charging points
+        sample_cps = [
+            ('CP001', 'Downtown Plaza', 0.35),
+            ('CP002', 'City Mall Parking', 0.32),
+            ('CP003', 'University Campus', 0.30),
+            ('CP004', 'Airport Terminal B', 0.40),
+            ('CP005', 'Central Station', 0.38)
+        ]
+        
+        for cp_id, location, price in sample_cps:
+            cursor.execute('''
+                INSERT OR IGNORE INTO charging_points (id, location, price_per_kwh, status)
+                VALUES (?, ?, ?, ?)
+            ''', (cp_id, location, price, ChargingPointStatus.DISCONNECTED.name))
+        
+        # Sample drivers
+        sample_drivers = [
+            ('DRV001', 'Alice Johnson', 'alice@email.com'),
+            ('DRV002', 'Bob Smith', 'bob@email.com'),
+            ('DRV003', 'Carol Davis', 'carol@email.com')
+        ]
+        
+        for driver_id, name, email in sample_drivers:
+            cursor.execute('''
+                INSERT OR IGNORE INTO drivers (id, name, email)
+                VALUES (?, ?, ?)
+            ''', (driver_id, name, email))
+    
+    def get_charging_points(self):
+        """Get all charging points"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, location, status, price_per_kwh, current_power, current_amount, current_driver_id
+                FROM charging_points
+            ''')
+            results = cursor.fetchall()
+            conn.close()
+            
+            charging_points = []
+            for row in results:
+                charging_points.append({
+                    'id': row[0],
+                    'location': row[1],
+                    'status': row[2],
+                    'price_per_kwh': row[3],
+                    'current_power': row[4],
+                    'current_amount': row[5],
+                    'current_driver_id': row[6]
+                })
+            return charging_points
+    
+    def update_cp_status(self, cp_id, status, driver_id=None):
+        """Update charging point status - accepts ChargingPointStatus enum or string"""
+        with self._lock:
+            # Convert enum to string if needed
+            if isinstance(status, ChargingPointStatus):
+                status_str = status.name
+            else:
+                status_str = status
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if driver_id:
+                cursor.execute('''
+                    UPDATE charging_points 
+                    SET status = ?, current_driver_id = ?, last_heartbeat = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status_str, driver_id, cp_id))
+            else:
+                cursor.execute('''
+                    UPDATE charging_points 
+                    SET status = ?, current_driver_id = NULL, last_heartbeat = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status_str, cp_id))
+            
+            conn.commit()
+            conn.close()
+    
+    def update_telemetry(self, cp_id, power, amount, driver_id=None):
+        """Update real-time telemetry data"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if driver_id:
+                cursor.execute('''
+                    UPDATE charging_points 
+                    SET current_power = ?, current_amount = ?, current_driver_id = ?, last_heartbeat = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (power, amount, driver_id, cp_id))
+            else:
+                cursor.execute('''
+                    UPDATE charging_points 
+                    SET current_power = ?, current_amount = ?, last_heartbeat = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (power, amount, cp_id))
+            
+            conn.commit()
+            conn.close()
+    
+    def create_charging_session(self, cp_id, driver_id):
+        """Start a new charging session"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO charging_sessions (cp_id, driver_id, start_time, status)
+                VALUES (?, ?, CURRENT_TIMESTAMP, 'ACTIVE')
+            ''', (cp_id, driver_id))
+            session_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return session_id
+    
+    def complete_charging_session(self, session_id, total_energy, total_cost):
+        """Complete a charging session"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE charging_sessions 
+                SET end_time = CURRENT_TIMESTAMP, total_energy = ?, total_cost = ?, status = 'COMPLETED'
+                WHERE id = ?
+            ''', (total_energy, total_cost, session_id))
+            conn.commit()
+            conn.close()
+    
+    def log_fault(self, cp_id, fault_type, description="No description"):
+        """Log a fault for a charging point"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO fault_logs (cp_id, fault_type, description, status)
+                VALUES (?, ?, ?, 'REPORTED')
+            ''', (cp_id, fault_type, description))
+            conn.commit()
+            conn.close()
+    
+    def resolve_fault(self, cp_id):
+        """Resolve all active faults for a charging point"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE fault_logs 
+                SET resolved_at = CURRENT_TIMESTAMP, status = 'RESOLVED'
+                WHERE cp_id = ? AND status = 'REPORTED'
+            ''', (cp_id,))
+            conn.commit()
+            conn.close()
+    
+    def get_cp_by_id(self, cp_id):
+        """Get charging point by ID"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, location, status, price_per_kwh, current_power, current_amount, current_driver_id
+                FROM charging_points WHERE id = ?
+            ''', (cp_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {
+                    'id': result[0],
+                    'location': result[1],
+                    'status': result[2],
+                    'price_per_kwh': result[3],
+                    'current_power': result[4],
+                    'current_amount': result[5],
+                    'current_driver_id': result[6]
+                }
+            return None
+
+# =============================================================================
+# DASHBOARD HELPER FUNCTIONS
+# =============================================================================
+
+def get_status_display(status):
+    """Convert status to display format with emojis"""
+    status_map = {
+        'ACTIVE': "🟢 AVAILABLE",
+        'OUT_OF_ORDER': "🔴 OUT OF ORDER", 
+        'IN_USAGE': "🔵 SUPPLYING",
+        'DEFECT': "🔴 DEFECT",
+        'DISCONNECTED': "⚫ DISCONNECTED"
+    }
+    return status_map.get(status, "⚫ UNKNOWN")
+
+def print_dashboard(db_manager):
+    """Print a console-based dashboard"""
+    charging_points = db_manager.get_charging_points()
+    
+    print("\n" + "="*80)
+    print("           EV CHARGING NETWORK - CENTRAL DASHBOARD")
+    print("="*80)
+    
+    stats = {
+        'total': len(charging_points),
+        'active': len([cp for cp in charging_points if cp['status'] == 'ACTIVE']),
+        'in_usage': len([cp for cp in charging_points if cp['status'] == 'IN_USAGE']),
+        'faulty': len([cp for cp in charging_points if cp['status'] in ['OUT_OF_ORDER', 'DEFECT']]),
+        'disconnected': len([cp for cp in charging_points if cp['status'] == 'DISCONNECTED'])
+    }
+    
+    print(f"📊 STATS: Total: {stats['total']} | Available: {stats['active']} | "
+          f"Supplying: {stats['in_usage']} | Faulty: {stats['faulty']} | "
+          f"Disconnected: {stats['disconnected']}")
+    print("-" * 80)
+    
+    for cp in charging_points:
+        status_display = get_status_display(cp['status'])
+        print(f"🔌 {cp['id']} | 📍 {cp['location']:20} | {status_display:25} | 💰 €{cp['price_per_kwh']}/kWh", end="")
+        
+        if cp['status'] == 'IN_USAGE':
+            print(f" | 🔋 {cp['current_power'] or 0:.1f}kW | 💵 €{cp['current_amount'] or 0:.2f} | 👤 {cp['current_driver_id'] or 'Unknown'}")
+        else:
+            print()
+    
+    print("="*80)
 
 

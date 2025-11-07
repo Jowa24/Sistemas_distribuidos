@@ -1,6 +1,13 @@
 import asyncio
-import aiosqlite
+# In EV_Central.py
+try:
+    from adosqlite import ev_database
+except ImportError:
+    # Fallback or create the module
+    import sqlite3
+    # You'll need to implement basic database functions
 import sqlite3
+import socket
 import sys
 import threading
 import time
@@ -519,3 +526,39 @@ class Central:
                       
 if __name__ == "__main__":
     main()
+    import threading
+from central_ui.app.main import start_dashboard_server
+
+# In your EV_Central class __init__ or main function:
+def start_dashboard(self):
+    """Start the web dashboard in a separate thread"""
+    dashboard_thread = threading.Thread(target=start_dashboard_server)
+    dashboard_thread.daemon = True
+    dashboard_thread.start()
+    print("Dashboard started at http://localhost:5000")
+
+# Call this when starting your central system
+# self.start_dashboard()
+import threading
+from flask import Flask, render_template_string, jsonify
+import time
+
+def start_dashboard():
+    """Start the web dashboard in a separate thread"""
+    app = Flask(__name__)
+    
+    # (Copy the entire HTML_TEMPLATE and Flask app code from simple_dashboard.py here)
+    # ... [paste all the code from simple_dashboard.py starting from HTML_TEMPLATE] ...
+    
+    print("🚀 EV Charging Dashboard started at http://localhost:5000")
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+# In your EV_Central class __init__ method, add:
+def start_dashboard_thread(self):
+    """Start the dashboard in background"""
+    dashboard_thread = threading.Thread(target=start_dashboard)
+    dashboard_thread.daemon = True
+    dashboard_thread.start()
+
+# Then call it when you start your central system:
+# self.start_dashboard_thread()
