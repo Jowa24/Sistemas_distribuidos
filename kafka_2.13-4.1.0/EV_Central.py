@@ -1,5 +1,6 @@
 import asyncio
 # In EV_Central.py
+import aiosqlite
 try:
     from adosqlite import ev_database
 except ImportError:
@@ -407,14 +408,14 @@ class Central:
                     if timed_out_cps:
                         print(f"Monitors timed out: {timed_out_cps}. Setting status to DISCONNECTED.")
                         for cp_id in timed_out_cps:
-                            await db.execute(
+                            cursor = db.execute(
                                 "UPDATE charging_points SET status = ? WHERE id = ?",
                                 (ChargingPointStatus.DISCONNECTED.value, cp_id)
                             )
                             # Remove from check list to prevent spamming
                             del self._monitor_last_seen[cp_id]
                         
-                        await db.commit()
+                        db.commit()
                         
                 except Exception as e:
                     print(f"Error in monitor timeout checker: {e}")
@@ -455,7 +456,7 @@ class Central:
                         case InformationTypeMonitor.AUTHENTICATION:
                             print(f"Monitor Auth: CP {msg.cp_id}, Status: {msg.status.name}")
                             # FIX: SQL (INSERT ON CONFLICT) and removed 'location'
-                            await db.execute("""
+                            cursor = db.execute("""
                             INSERT INTO charging_points (id, status, priceKW)
                             VALUES (?, ?, ?)
                             ON CONFLICT(id) DO UPDATE SET
@@ -464,12 +465,12 @@ class Central:
                             """, (msg.cp_id, msg.status.value, msg.price_kw))
 
                         case InformationTypeMonitor.STATUS_UPDATE:
-                            await db.execute("UPDATE charging_points SET status = ? WHERE id = ?", 
+                            cursor = db.execute("UPDATE charging_points SET status = ? WHERE id = ?", 
                                             (msg.status.value, msg.cp_id))
 
                         case InformationTypeMonitor.ERROR:
                             print(f"Monitor ERROR: CP {msg.cp_id} reported {msg.status.name}.")
-                            await db.execute("UPDATE charging_points SET status = ? WHERE id = ?", 
+                            cursor = db.execute("UPDATE charging_points SET status = ? WHERE id = ?", 
                                             (msg.status.value, msg.cp_id))
                             
                             # Notify the active driver
@@ -477,12 +478,12 @@ class Central:
 
                         case InformationTypeMonitor.ERROR_RESOLVED:
                             print(f"Monitor Error Resolved: CP {msg.cp_id} is now {msg.status.name}.")
-                            await db.execute("UPDATE charging_points SET status = ? WHERE id = ?", 
+                            cursor = db.execute("UPDATE charging_points SET status = ? WHERE id = ?", 
                                             (msg.status.value, msg.cp_id))
                             
                             await self.notify_driver(db, msg.cp_id, str(msg))
                     
-                    await db.commit()
+                    db.commit()
         
         except (asyncio.IncompleteReadError, ConnectionResetError):
             print(f"Monitor {addr} (CP {monitor_cp_id}) disconnected.")
@@ -495,17 +496,17 @@ class Central:
             writer.close()
             await writer.wait_closed()
             
-    async def notify_driver(self, db: aiosqlite.Connection, cp_id: str, message_str: str):
+    async def notify_driver(self, db: sqlite3.Connection, cp_id: str, message_str: str):
         """
         (Async) Finds an active driver at a CP and sends them a message.
         """
-        cursor = await db.execute("""
+        cursor = cursor = db.execute("""
             SELECT driver_id
             FROM requests
             WHERE cp_id = ? AND done = False
         """, (cp_id,))
         
-        result = await cursor.fetchone()
+        result = cursor.fetchone()
         await cursor.close()
 
         if result:
@@ -551,7 +552,7 @@ def start_dashboard():
     # ... [paste all the code from simple_dashboard.py starting from HTML_TEMPLATE] ...
     
     print("🚀 EV Charging Dashboard started at http://localhost:5000")
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=5080, debug=True)
 
 # In your EV_Central class __init__ method, add:
 def start_dashboard_thread(self):
